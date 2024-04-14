@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+
+# Filename:
+# Description: Cron job for applying updates to local /etc/hosts file for Heartbeat service
+
+# set -euo pipefail
+
+declare -r config_file="heartbeat-update.rc"
+source $(dirname $0)/func_lib.sh
+
+function line_in_file() {
+    local -r line_marker="$1"
+    local -r file_path="$2"
+
+    local -r line_number=$(grep --line-number --max-count=1 -e "$line_marker" $file_path | cut -f1 -d':')
+    if [[ "x$line_number" != "x" ]]
+    then
+        echo $line_number
+    else
+        echo 0
+    fi
+}
+
+function temp_file() {
+    local -r result=$(mktemp --tmpdir=/tmp hosts.XXXXXXXXXX)
+    local -ir EXIT_CODE=$?
+
+    if (( $EXIT_CODE != 0 ))
+    then
+        log_error "Error creating temporary file: ${EXIT_CODE}" >&2
+        exit 1
+    fi
+
+    echo "${result}"
+}
+
+function make_backup() {
+    # local -r timestamp=$(date --utc +%Y%m%dT%H%M%S-%3NZ)
+    local -r backup_path="$1~"
+
+    cp --remove-destination "$1" "$backup_path"
+    local -ir EXIT_CODE=$?
+    if (( $EXIT_CODE != 0 ))
+    then
+        log_error "Error taking backup of $1 file" >&2
+        exit 1
+    fi
+
+    log_success "Backup created: ${backup_path}"
+}
+
+function update_hosts() {
+    [ -r "$HOSTS_PATH" ] || {
+        log_error "File $HOSTS_PATH does not exists or not accessible"
+        exit 1
+    }
+    make_backup "$HOSTS_PATH"
+
+    # Find start and stop markers in source file
+    local -r start_marker=$(line_in_file "$HOSTS_START_MARKER" "$HOSTS_PATH")
+    local -r end_marker=$(line_in_file "$HOSTS_END_MARKER" "$HOSTS_PATH")
+    local -r lines_count=$(wc -l "$HOSTS_PATH" | cut -f1 -d' ')
+    local -r tail_lines=$(( $lines_count - $end_marker + 1 ))
+
+    log_success "Start marker found at line $start_marker"
+    log_success "End marker found at line $end_marker"
+
+    #! DEBUG
+    # echo "Lines count: $lines_count"
+    # echo "Tail lines: $tail_lines"
+
+    if (( $end_marker <= $start_marker ))
+    then
+        log_error "Start or End markers are in reverse order or missing"
+        exit 1
+    fi
+
+    local -r temp_path=$(temp_file)
+    local -r hosts_updates_files=$(ls ${HOSTS_UPDATES_DIR}/${HOSTS_UPDATE_PATTERN} 2>/dev/null)
+
+    #! DEBUG
+    # echo "hosts_updates_files: $hosts_updates_files"
+
+    # Copy file contents before Start marker
+    head -$start_marker "$HOSTS_PATH" > $temp_path
+
+    if [[ "x${hosts_updates_files}" != "x" ]]
+    then
+        # Copy updates from .hosts files
+        for hosts in "${hosts_updates_files}"
+        do
+            echo "# File: ${hosts}" >> $temp_path
+            cat $hosts >> $temp_path
+            echo "# End of file: ${hosts}" >> $temp_path
+            echo "#" >> $temp_path
+        done
+    fi
+
+    # Copy file contents after End marker
+    tail -$tail_lines "$HOSTS_PATH" >> $temp_path
+
+    log_success "Updates are copied to temporary file: $temp_path"
+
+    cp --remove-destination $temp_path $HOSTS_PATH
+    log_success "Updated are copied"
+
+    rm $temp_path
+    log_success "Temporary file ${temp_path} removed"
+}
+
+function update_heartbeat_config() {
+    local -r hb_updates_files=$(ls ${HEARTBEAT_UPDATES_DIR}/${HEARTBEAT_CONFIG_PATTERN} 2>/dev/null)
+    if [[ "x${hb_updates_files}" != "x" ]]
+    then
+        # Cleanup destination directory
+        rm --force "${HEARTBEAT_DEST_DIR}/${HEARTBEAT_CONFIG_PATTERN}"
+        log_success "Configuration files removed from ${HEARTBEAT_DEST_DIR}/"
+
+        # Copy updates from heartbeat config files
+        for hb_config in "${hb_updates_files}"
+        do
+            cp --remove-destination "${hb_config}" "${HEARTBEAT_DEST_DIR}/"
+        done
+
+        log_success "Heartbeat configuration update completed"
+    fi
+}
+
+function main() {
+    trap catch_signal EXIT
+
+    log_success "Starting $(basename $0) job"
+    import_variables $config_file
+
+    update_hosts
+    update_heartbeat_config
+}
+
+main "$@"

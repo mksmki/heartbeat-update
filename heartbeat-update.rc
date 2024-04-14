@@ -1,0 +1,12 @@
+# Configuration for heartbeat-update
+
+HOSTS_PATH="/etc/hosts"
+HOSTS_UPDATES_DIR="."
+HOSTS_UPDATE_PATTERN="*.hosts"
+
+HOSTS_START_MARKER="^# --- START OF HEARTBEAT MANAGED ---$"
+HOSTS_END_MARKER="^# --- END OF HEARTBEAT MANAGED ---$"
+
+HEARTBEAT_CONFIG_PATTERN="*.conf"
+HEARTBEAT_UPDATES_DIR="."
+HEARTBEAT_DEST_DIR="/tmp/heartbeat"
